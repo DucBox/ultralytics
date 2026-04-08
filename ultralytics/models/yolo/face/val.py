@@ -19,9 +19,8 @@ FACE5_SIGMA = np.array([0.025, 0.025, 0.026, 0.035, 0.035], dtype=np.float32)
 class FaceValidator(PoseValidator):
     """Validator for YOLO face detection models with 5-point landmark evaluation.
 
-    Extends PoseValidator with face-specific configuration: uses uniform OKS sigmas
-    for 5 face landmarks, skips COCO JSON evaluation (no WIDER Face annotation JSON),
-    and reports metrics as face-specific labels.
+    Extends PoseValidator with face-specific configuration: uses uniform OKS sigmas for 5 face landmarks, skips COCO
+    JSON evaluation (no WIDER Face annotation JSON), and reports metrics as face-specific labels.
 
     Attributes:
         args (dict): Validator arguments with task='face'.
