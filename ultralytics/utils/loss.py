@@ -333,9 +333,8 @@ class KeypointLoss(nn.Module):
 class WingLoss(nn.Module):
     """Wing loss for face landmark regression.
 
-    Reference: https://arxiv.org/pdf/1711.06753v4.pdf
-    Provides logarithmic penalty for small errors and linear penalty for large errors,
-    making it more suitable for face landmark regression than L2 loss.
+    Reference: https://arxiv.org/pdf/1711.06753v4.pdf Provides logarithmic penalty for small errors and linear penalty
+    for large errors, making it more suitable for face landmark regression than L2 loss.
     """
 
     def __init__(self, w: float = 10.0, epsilon: float = 2.0) -> None:
@@ -1000,9 +999,8 @@ class PoseLoss26(v8PoseLoss):
 class v8FaceLoss(v8PoseLoss):
     """Loss function for face detection with 5-point landmark regression.
 
-    Extends v8PoseLoss by replacing the OKS-based KeypointLoss with WingLoss,
-    which provides better gradient behavior for face landmark regression.
-    No keypoint objectness (kobj) loss — visibility is a data property, not predicted.
+    Extends v8PoseLoss by replacing the OKS-based KeypointLoss with WingLoss, which provides better gradient behavior
+    for face landmark regression. No keypoint objectness (kobj) loss — visibility is a data property, not predicted.
     """
 
     def __init__(self, model, tal_topk: int = 10, tal_topk2: int = 10) -> None:
@@ -1040,9 +1038,9 @@ class v8FaceLoss(v8PoseLoss):
         lmk_loss = torch.tensor(0.0, device=self.device)
 
         if masks.any():
-            gt_kpt = selected_keypoints[masks]   # (N_fg, N_kpts, 3)
-            pred_kpt = pred_kpts[masks]          # (N_fg, N_kpts, 3)
-            kpt_mask = gt_kpt[..., 2] != 0       # (N_fg, N_kpts) bool — visible landmarks
+            gt_kpt = selected_keypoints[masks]  # (N_fg, N_kpts, 3)
+            pred_kpt = pred_kpts[masks]  # (N_fg, N_kpts, 3)
+            kpt_mask = gt_kpt[..., 2] != 0  # (N_fg, N_kpts) bool — visible landmarks
             lmk_loss = self.wing_loss(pred_kpt[..., :2], gt_kpt[..., :2], kpt_mask)
 
         return lmk_loss, torch.tensor(0.0, device=self.device)
@@ -1051,8 +1049,8 @@ class v8FaceLoss(v8PoseLoss):
 class FaceLoss26(PoseLoss26):
     """Loss function for YOLO26 face detection with 5-point landmark regression.
 
-    Extends PoseLoss26 (which uses the correct kpts_decode for YOLO26's anchor-offset
-    scheme and supports RLE/sigma outputs) by replacing OKS KeypointLoss with WingLoss.
+    Extends PoseLoss26 (which uses the correct kpts_decode for YOLO26's anchor-offset scheme and supports RLE/sigma
+    outputs) by replacing OKS KeypointLoss with WingLoss.
     """
 
     def __init__(self, model, tal_topk: int = 10, tal_topk2: int | None = None) -> None:
@@ -1081,9 +1079,9 @@ class FaceLoss26(PoseLoss26):
         lmk_loss = torch.tensor(0.0, device=self.device)
 
         if masks.any():
-            gt_kpt = selected_keypoints[masks]   # (N_fg, N_kpts, 3)
-            pred_kpt = pred_kpts[masks]          # (N_fg, N_kpts, 3+)
-            kpt_mask = gt_kpt[..., 2] != 0       # visible landmarks
+            gt_kpt = selected_keypoints[masks]  # (N_fg, N_kpts, 3)
+            pred_kpt = pred_kpts[masks]  # (N_fg, N_kpts, 3+)
+            kpt_mask = gt_kpt[..., 2] != 0  # visible landmarks
             lmk_loss = self.wing_loss(pred_kpt[..., :2], gt_kpt[..., :2], kpt_mask)
 
         return lmk_loss, torch.tensor(0.0, device=self.device), torch.tensor(0.0, device=self.device)
