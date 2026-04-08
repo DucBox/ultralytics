@@ -330,6 +330,50 @@ class KeypointLoss(nn.Module):
         return (kpt_loss_factor.view(-1, 1) * ((1 - torch.exp(-e)) * kpt_mask)).mean()
 
 
+class WingLoss(nn.Module):
+    """Wing loss for face landmark regression.
+
+    Reference: https://arxiv.org/pdf/1711.06753v4.pdf
+    Provides logarithmic penalty for small errors and linear penalty for large errors,
+    making it more suitable for face landmark regression than L2 loss.
+    """
+
+    def __init__(self, w: float = 10.0, epsilon: float = 2.0) -> None:
+        """Initialize WingLoss with window width w and curvature epsilon."""
+        super().__init__()
+        self.w = w
+        self.epsilon = epsilon
+        self.C = w - w * math.log(1.0 + w / epsilon)
+
+    def forward(
+        self,
+        pred_kpts: torch.Tensor,
+        gt_kpts: torch.Tensor,
+        kpt_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Calculate Wing loss for visible keypoints only.
+
+        Args:
+            pred_kpts: Predicted keypoint coordinates (..., 2).
+            gt_kpts: Ground truth keypoint coordinates (..., 2).
+            kpt_mask: Boolean mask of valid (visible) keypoints (...).
+
+        Returns:
+            Scalar loss value (mean over visible keypoints).
+        """
+        if not kpt_mask.any():
+            return pred_kpts.sum() * 0.0
+        pred = pred_kpts[kpt_mask]
+        gt = gt_kpts[kpt_mask]
+        diff = (pred - gt).abs()
+        loss = torch.where(
+            diff < self.w,
+            self.w * torch.log(1.0 + diff / self.epsilon),
+            diff - self.C,
+        )
+        return loss.mean()
+
+
 class v8DetectionLoss:
     """Criterion class for computing training losses for YOLOv8 object detection."""
 
@@ -951,6 +995,98 @@ class PoseLoss26(v8PoseLoss):
                 kpts_obj_loss = self.bce_pose(pred_kpt[..., 2], kpt_mask.float())  # keypoint obj loss
 
         return kpts_loss, kpts_obj_loss, rle_loss
+
+
+class v8FaceLoss(v8PoseLoss):
+    """Loss function for face detection with 5-point landmark regression.
+
+    Extends v8PoseLoss by replacing the OKS-based KeypointLoss with WingLoss,
+    which provides better gradient behavior for face landmark regression.
+    No keypoint objectness (kobj) loss — visibility is a data property, not predicted.
+    """
+
+    def __init__(self, model, tal_topk: int = 10, tal_topk2: int = 10) -> None:
+        """Initialize v8FaceLoss with WingLoss for landmark regression."""
+        super().__init__(model, tal_topk, tal_topk2)
+        self.wing_loss = WingLoss(w=10.0, epsilon=2.0)
+
+    def calculate_keypoints_loss(
+        self,
+        masks: torch.Tensor,
+        target_gt_idx: torch.Tensor,
+        keypoints: torch.Tensor,
+        batch_idx: torch.Tensor,
+        stride_tensor: torch.Tensor,
+        target_bboxes: torch.Tensor,
+        pred_kpts: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Calculate landmark loss using WingLoss for visible landmarks only.
+
+        Args:
+            masks: Binary mask indicating foreground anchors, shape (BS, N_anchors).
+            target_gt_idx: Maps anchors to GT objects, shape (BS, N_anchors).
+            keypoints: GT keypoints in image coords, shape (N_kpts_in_batch, N_kpts, 3).
+            batch_idx: Batch index for keypoints, shape (N_kpts_in_batch, 1).
+            stride_tensor: Anchor strides, shape (N_anchors, 1).
+            target_bboxes: GT boxes in xyxy format, shape (BS, N_anchors, 4). Unused.
+            pred_kpts: Predicted keypoints (stride-normalized), shape (BS, N_anchors, N_kpts, 3).
+
+        Returns:
+            Tuple of (landmark_wing_loss, zero_kobj_loss).
+        """
+        selected_keypoints = self._select_target_keypoints(keypoints, batch_idx, target_gt_idx, masks)
+        selected_keypoints[..., :2] /= stride_tensor.view(1, -1, 1, 1)
+
+        lmk_loss = torch.tensor(0.0, device=self.device)
+
+        if masks.any():
+            gt_kpt = selected_keypoints[masks]   # (N_fg, N_kpts, 3)
+            pred_kpt = pred_kpts[masks]          # (N_fg, N_kpts, 3)
+            kpt_mask = gt_kpt[..., 2] != 0       # (N_fg, N_kpts) bool — visible landmarks
+            lmk_loss = self.wing_loss(pred_kpt[..., :2], gt_kpt[..., :2], kpt_mask)
+
+        return lmk_loss, torch.tensor(0.0, device=self.device)
+
+
+class FaceLoss26(PoseLoss26):
+    """Loss function for YOLO26 face detection with 5-point landmark regression.
+
+    Extends PoseLoss26 (which uses the correct kpts_decode for YOLO26's anchor-offset
+    scheme and supports RLE/sigma outputs) by replacing OKS KeypointLoss with WingLoss.
+    """
+
+    def __init__(self, model, tal_topk: int = 10, tal_topk2: int | None = None) -> None:
+        """Initialize FaceLoss26 with WingLoss for landmark regression."""
+        super().__init__(model, tal_topk, tal_topk2)
+        self.wing_loss = WingLoss(w=10.0, epsilon=2.0)
+
+    def calculate_keypoints_loss(
+        self,
+        masks: torch.Tensor,
+        target_gt_idx: torch.Tensor,
+        keypoints: torch.Tensor,
+        batch_idx: torch.Tensor,
+        stride_tensor: torch.Tensor,
+        target_bboxes: torch.Tensor,
+        pred_kpts: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Calculate landmark loss using WingLoss for visible landmarks only.
+
+        Returns:
+            Tuple of (landmark_wing_loss, zero_kobj_loss, zero_rle_loss).
+        """
+        selected_keypoints = self._select_target_keypoints(keypoints, batch_idx, target_gt_idx, masks)
+        selected_keypoints[..., :2] /= stride_tensor.view(1, -1, 1, 1)
+
+        lmk_loss = torch.tensor(0.0, device=self.device)
+
+        if masks.any():
+            gt_kpt = selected_keypoints[masks]   # (N_fg, N_kpts, 3)
+            pred_kpt = pred_kpts[masks]          # (N_fg, N_kpts, 3+)
+            kpt_mask = gt_kpt[..., 2] != 0       # visible landmarks
+            lmk_loss = self.wing_loss(pred_kpt[..., :2], gt_kpt[..., :2], kpt_mask)
+
+        return lmk_loss, torch.tensor(0.0, device=self.device), torch.tensor(0.0, device=self.device)
 
 
 class v8ClassificationLoss:

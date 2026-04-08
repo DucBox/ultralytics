@@ -13,6 +13,7 @@ from ultralytics.models import yolo
 from ultralytics.nn.tasks import (
     ClassificationModel,
     DetectionModel,
+    FaceModel,
     OBBModel,
     PoseModel,
     SegmentationModel,
@@ -114,6 +115,12 @@ class YOLO(Model):
                 "trainer": yolo.obb.OBBTrainer,
                 "validator": yolo.obb.OBBValidator,
                 "predictor": yolo.obb.OBBPredictor,
+            },
+            "face": {
+                "model": FaceModel,
+                "trainer": yolo.face.FaceTrainer,
+                "validator": yolo.face.FaceValidator,
+                "predictor": yolo.face.FacePredictor,
             },
         }
 

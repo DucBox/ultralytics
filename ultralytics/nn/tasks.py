@@ -77,9 +77,11 @@ from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, WINDOWS, YAML, colorstr,
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
     E2ELoss,
+    FaceLoss26,
     PoseLoss26,
     v8ClassificationLoss,
     v8DetectionLoss,
+    v8FaceLoss,
     v8OBBLoss,
     v8PoseLoss,
     v8SegmentationLoss,
@@ -617,6 +619,35 @@ class PoseModel(DetectionModel):
     def init_criterion(self):
         """Initialize the loss criterion for the PoseModel."""
         return E2ELoss(self, PoseLoss26) if getattr(self, "end2end", False) else v8PoseLoss(self)
+
+
+class FaceModel(PoseModel):
+    """YOLO face detection model with 5-point landmark support.
+
+    Extends PoseModel with WingLoss criterion for better face landmark regression accuracy.
+    Uses kpt_shape=[5, 3] for 5 landmarks with visibility flags.
+
+    Examples:
+        Initialize a face model
+        >>> model = FaceModel("yolo11n-face.yaml", ch=3, nc=1, data_kpt_shape=(5, 3))
+        >>> results = model.predict(image_tensor)
+    """
+
+    def __init__(self, cfg="yolo11n-face.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
+        """Initialize YOLO face detection model with landmark support.
+
+        Args:
+            cfg (str | dict): Model configuration file path or dictionary.
+            ch (int): Number of input channels.
+            nc (int, optional): Number of classes (default: 1 for face).
+            data_kpt_shape (tuple): Shape of landmark data, e.g. (5, 3) for 5 landmarks with visibility.
+            verbose (bool): Whether to display model information.
+        """
+        super().__init__(cfg=cfg, ch=ch, nc=nc, data_kpt_shape=data_kpt_shape, verbose=verbose)
+
+    def init_criterion(self):
+        """Initialize WingLoss-based loss criterion for face landmark detection."""
+        return E2ELoss(self, FaceLoss26) if getattr(self, "end2end", False) else v8FaceLoss(self)
 
 
 class ClassificationModel(BaseModel):
@@ -1826,6 +1857,8 @@ def guess_model_task(model):
             return "classify"
         elif "-pose" in model.stem or "pose" in model.parts:
             return "pose"
+        elif "-face" in model.stem or "face" in model.parts:
+            return "face"
         elif "-obb" in model.stem or "obb" in model.parts:
             return "obb"
         elif "detect" in model.parts:

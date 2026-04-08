@@ -1,0 +1,30 @@
+# WIDER FACE dataset for Ultralytics face task with 5-point landmarks
+# Images: WIDER_train/images/CATEGORY/*.jpg (train), widerface/images/val/CATEGORY/*.jpg (val)
+# Labels: WIDER_train/labels/CATEGORY/*.txt (train), widerface/labels/val/CATEGORY/*.txt (val)
+# Label format (20 values): class cx cy w h lm1x lm1y v1 lm2x lm2y v2 lm3x lm3y v3 lm4x lm4y v4 lm5x lm5y v5
+# Landmarks: left_eye, right_eye, nose, left_mouth, right_mouth (all normalized 0-1)
+
+path: /Users/ngoquangduc/Desktop/workspace/face_detection # dataset root dir
+train: WIDER_train/images # train images (nested by event category)
+val: widerface/images/val # val images (nested by event category)
+
+# Keypoint configuration
+kpt_shape: [5, 3] # [num_landmarks, (x, y, visibility)]
+# flip_idx: swap left↔right landmarks on horizontal flip
+# Landmark order: left_eye(0), right_eye(1), nose(2), left_mouth(3), right_mouth(4)
+# After hflip:   right_eye(1), left_eye(0), nose(2), right_mouth(4), left_mouth(3)
+flip_idx: [1, 0, 2, 4, 3]
+
+# Classes
+nc: 1
+names:
+  0: face
+
+# Keypoint names per class (optional, for visualization)
+kpt_names:
+  0:
+    - left_eye
+    - right_eye
+    - nose
+    - left_mouth
+    - right_mouth
