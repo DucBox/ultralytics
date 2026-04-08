@@ -624,8 +624,8 @@ class PoseModel(DetectionModel):
 class FaceModel(PoseModel):
     """YOLO face detection model with 5-point landmark support.
 
-    Extends PoseModel with WingLoss criterion for better face landmark regression accuracy.
-    Uses kpt_shape=[5, 3] for 5 landmarks with visibility flags.
+    Extends PoseModel with WingLoss criterion for better face landmark regression accuracy. Uses kpt_shape=[5, 3] for 5
+    landmarks with visibility flags.
 
     Examples:
         Initialize a face model
