@@ -362,7 +362,7 @@ class WingLoss(nn.Module):
             Scalar loss value (mean over visible keypoints).
         """
         if not kpt_mask.any():
-            return pred_kpts.sum() * 0.0
+            return torch.zeros(1, device=pred_kpts.device, dtype=pred_kpts.dtype).squeeze()
         pred = pred_kpts[kpt_mask]
         gt = gt_kpts[kpt_mask]
         diff = (pred - gt).abs()
@@ -1059,6 +1059,10 @@ class FaceLoss26(PoseLoss26):
         """Initialize FaceLoss26 with WingLoss for landmark regression."""
         super().__init__(model, tal_topk, tal_topk2)
         self.wing_loss = WingLoss(w=10.0, epsilon=2.0)
+        # Pose26 head always has flow_model=RealNVP, which causes PoseLoss26 to init rle_loss.
+        # Face task does not use RLE — disable it so loss tensor stays 5-element (not 6).
+        self.rle_loss = None
+        self.flow_model = None
 
     def calculate_keypoints_loss(
         self,
