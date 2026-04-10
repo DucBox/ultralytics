@@ -61,6 +61,25 @@ def parse_args():
         ),
     )
     core.add_argument(
+        "--task",
+        type=str,
+        default="face",
+        help="Task type: 'face' (WingLoss + VFL + GIoU + RepulsionLoss) or 'pose' (OKS + BCE + CIoU)",
+    )
+    core.add_argument(
+        "--face-loss",
+        type=str,
+        default="auto",
+        choices=["auto", "v8", "v6", "26"],
+        help=(
+            "Face loss variant (only used when task='face'):\n"
+            "  auto — auto-detect from head type (Pose→v8FaceLoss, Pose26→v8YOLOv6FaceLoss)\n"
+            "  v8   — v8FaceLoss: WingLoss + BCE + CIoU (for YOLO11/12)\n"
+            "  v6   — v8YOLOv6FaceLoss: WingLoss + VFL + GIoU + RepulsionLoss (YOLOv6 clone)\n"
+            "  26   — FaceLoss26: WingLoss + BCE + CIoU with Pose26 decode (YOLO26 native)"
+        ),
+    )
+    core.add_argument(
         "--weights",
         type=str,
         default=None,
@@ -162,7 +181,7 @@ def main():
         if not resume_path.exists():
             raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
         print(f"Resuming training from: {resume_path}")
-        model = YOLO(str(resume_path), task="face")
+        model = YOLO(str(resume_path), task=args.task)
         model.train(resume=True)
         return
 
@@ -197,10 +216,17 @@ def main():
     print(f"Model:   {model_path}")
     print(f"Weights: {args.weights or 'None (train from scratch)'}")
     print(f"Data:    {args.data}")
+    print(f"Task:    {args.task}")
+    if args.task == "face":
+        print(f"Loss:    {args.face_loss}")
     print(f"Device:  {args.device or 'auto'}")
     print()
 
-    model = YOLO(str(model_path), task="face")
+    model = YOLO(str(model_path), task=args.task)
+
+    # Set face loss variant on the inner model so FaceModel.init_criterion() can read it
+    if args.task == "face" and hasattr(model, "model") and hasattr(model.model, "model"):
+        model.model.face_loss_type = args.face_loss
 
     if args.weights:
         weights_path = Path(args.weights)
@@ -211,7 +237,7 @@ def main():
 
     train_kwargs = dict(
         data=args.data,
-        task="face",
+        task=args.task,
         # Schedule
         epochs=args.epochs,
         batch=args.batch,

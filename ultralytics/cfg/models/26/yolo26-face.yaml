@@ -6,8 +6,8 @@
 
 # Parameters
 nc: 1 # number of classes (face only)
-end2end: True # whether to use end-to-end mode
-reg_max: 1 # DFL bins
+end2end: False # whether to use end-to-end mode (False = single-branch like YOLOv6)
+reg_max: 16 # DFL bins (16 = CE-based DFL like YOLOv6)
 kpt_shape: [5, 3] # 5 landmarks x (x, y, visibility)
 scales: # model compound scaling constants, i.e. 'model=yolo26n-face.yaml' will call yolo26-face.yaml with scale 'n'
   # [depth, width, max_channels]

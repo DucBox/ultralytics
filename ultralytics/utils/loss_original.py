@@ -106,131 +106,6 @@ class DFLoss(nn.Module):
         ).mean(-1, keepdim=True)
 
 
-def pairwise_bbox_iou(box1: torch.Tensor, box2: torch.Tensor) -> torch.Tensor:
-    """Compute pairwise IoU between two sets of boxes in xyxy format.
-
-    Port from YOLOv6-0.3.1/yolov6/utils/figure_iou.py:pairwise_bbox_iou.
-
-    Args:
-        box1: (N, 4) tensor in xyxy format.
-        box2: (M, 4) tensor in xyxy format.
-
-    Returns:
-        (N, M) IoU matrix.
-    """
-    lt = torch.max(box1[:, None, :2], box2[:, :2])
-    rb = torch.min(box1[:, None, 2:], box2[:, 2:])
-    area1 = (box1[:, 2] - box1[:, 0]).clamp(0) * (box1[:, 3] - box1[:, 1]).clamp(0)
-    area2 = (box2[:, 2] - box2[:, 0]).clamp(0) * (box2[:, 3] - box2[:, 1]).clamp(0)
-    inter = (rb - lt).clamp(0).prod(dim=2)
-    return inter / (area1[:, None] + area2 - inter + 1e-7)
-
-
-def _iog(gt_box: torch.Tensor, pred_box: torch.Tensor) -> torch.Tensor:
-    """Compute Intersection over GT area (IoG).
-
-    Port from YOLOv6-0.3.1/yolov6/utils/RepulsionLoss.py:IoG.
-
-    Args:
-        gt_box: (N, 4) in xyxy format.
-        pred_box: (N, 4) in xyxy format.
-
-    Returns:
-        (N,) IoG values.
-    """
-    ix1 = torch.max(gt_box[:, 0], pred_box[:, 0])
-    iy1 = torch.max(gt_box[:, 1], pred_box[:, 1])
-    ix2 = torch.min(gt_box[:, 2], pred_box[:, 2])
-    iy2 = torch.min(gt_box[:, 3], pred_box[:, 3])
-    inter = (ix2 - ix1).clamp(0) * (iy2 - iy1).clamp(0)
-    gt_area = ((gt_box[:, 2] - gt_box[:, 0]) * (gt_box[:, 3] - gt_box[:, 1])).clamp(1e-6)
-    return inter / gt_area
-
-
-def _smooth_ln(x: torch.Tensor, sigma: float = 0.5) -> torch.Tensor:
-    """Smooth log function used in RepulsionLoss.
-
-    Port from YOLOv6-0.3.1/yolov6/utils/RepulsionLoss.py:smooth_ln.
-    """
-    return torch.where(
-        x <= sigma,
-        -torch.log(1 - x + 1e-7),
-        (x - sigma) / (1 - sigma) - math.log(1 - sigma + 1e-7),
-    )
-
-
-def repulsion_loss(
-    pbox: torch.Tensor,
-    gtbox: torch.Tensor,
-    fg_mask: torch.Tensor,
-    sigma_repgt: float = 0.9,
-    sigma_repbox: float = 0.0,
-    pnms: float = 0.0,
-    gtnms: float = 0.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute RepulsionLoss (repGT + repBox).
-
-    Port from YOLOv6-0.3.1/yolov6/utils/RepulsionLoss.py.
-    repGT penalizes predicted boxes being close to non-matched GT boxes.
-    repBox penalizes predicted boxes overlapping each other.
-
-    Args:
-        pbox: (bs, n_anchors, 4) predicted boxes in stride-normalized xyxy.
-        gtbox: (bs, n_anchors, 4) assigned GT boxes in stride-normalized xyxy.
-        fg_mask: (bs, n_anchors) bool mask of foreground anchors.
-        sigma_repgt: smooth_ln threshold for repGT.
-        sigma_repbox: smooth_ln threshold for repBox.
-        pnms: IoU threshold for repBox (anchors with ppiou > pnms are penalized).
-        gtnms: IoU threshold for repGT (anchors with pgiou > gtnms are penalized).
-
-    Returns:
-        (loss_repgt, loss_repbox) scalar tensors.
-    """
-    loss_repgt = torch.zeros(1, device=pbox.device)
-    loss_repbox = torch.zeros(1, device=pbox.device)
-    bs_count = 0
-    pbox = pbox.detach()
-    gtbox = gtbox.detach()
-
-    for idx in range(pbox.shape[0]):
-        if fg_mask[idx].sum() <= 0:
-            continue
-        _pbox_pos = pbox[idx][fg_mask[idx]]   # (num_pos, 4)
-        _gtbox_pos = gtbox[idx][fg_mask[idx]]  # (num_pos, 4)
-        bs_count += 1
-
-        pgiou = pairwise_bbox_iou(_pbox_pos, _gtbox_pos)  # (num_pos, num_pos)
-        ppiou = pairwise_bbox_iou(_pbox_pos, _pbox_pos)   # (num_pos, num_pos)
-
-        # Mask same-GT pairs and upper triangle (matching YOLOv6 loop logic)
-        _gt_np = _gtbox_pos.cpu().numpy()
-        for j in range(len(_gt_np)):
-            for z in range(j, len(_gt_np)):
-                ppiou[j, z] = 0
-                if (_gt_np[j] == _gt_np[z]).all():
-                    pgiou[j, z] = 0
-                    pgiou[z, j] = 0
-                    ppiou[z, j] = 0
-
-        # repGT: penalize proximity to non-matched GT
-        max_iou, _ = pgiou.max(dim=1)
-        pg_mask = max_iou > gtnms
-        if pg_mask.sum() > 0:
-            _, argmax = pgiou[pg_mask].max(dim=1)
-            loss_repgt += _smooth_ln(_iog(_gtbox_pos[argmax], _pbox_pos[pg_mask]), sigma_repgt).mean()
-
-        # repBox: penalize mutual overlap between predictions
-        pp_mask = ppiou > pnms
-        if pp_mask.sum() > 0:
-            loss_repbox += _smooth_ln(ppiou[pp_mask], sigma_repbox).mean()
-
-    if bs_count > 0:
-        loss_repgt = loss_repgt / bs_count
-        loss_repbox = loss_repbox / bs_count
-
-    return loss_repgt.squeeze(0), loss_repbox.squeeze(0)
-
-
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes."""
 
@@ -272,48 +147,6 @@ class BboxLoss(nn.Module):
             pred_dist[..., 1::2] /= imgsz[0]
             loss_dfl = (
                 F.l1_loss(pred_dist[fg_mask], target_ltrb[fg_mask], reduction="none").mean(-1, keepdim=True) * weight
-            )
-            loss_dfl = loss_dfl.sum() / target_scores_sum
-
-        return loss_iou, loss_dfl
-
-
-class FaceGIoUBboxLoss(BboxLoss):
-    """BboxLoss variant using GIoU instead of CIoU, matching YOLOv6's iou_type='giou'."""
-
-    def forward(
-        self,
-        pred_dist: torch.Tensor,
-        pred_bboxes: torch.Tensor,
-        anchor_points: torch.Tensor,
-        target_bboxes: torch.Tensor,
-        target_scores: torch.Tensor,
-        target_scores_sum: torch.Tensor,
-        fg_mask: torch.Tensor,
-        imgsz: torch.Tensor,
-        stride: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute GIoU and DFL losses for bounding boxes."""
-        weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, GIoU=True)
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
-
-        if self.dfl_loss:
-            target_ltrb = bbox2dist(anchor_points, target_bboxes, self.dfl_loss.reg_max - 1)
-            loss_dfl = (
-                self.dfl_loss(pred_dist[fg_mask].view(-1, self.dfl_loss.reg_max), target_ltrb[fg_mask]) * weight
-            )
-            loss_dfl = loss_dfl.sum() / target_scores_sum
-        else:
-            target_ltrb = bbox2dist(anchor_points, target_bboxes)
-            target_ltrb = target_ltrb * stride
-            target_ltrb[..., 0::2] /= imgsz[1]
-            target_ltrb[..., 1::2] /= imgsz[0]
-            pred_dist_ = pred_dist * stride
-            pred_dist_[..., 0::2] /= imgsz[1]
-            pred_dist_[..., 1::2] /= imgsz[0]
-            loss_dfl = (
-                F.l1_loss(pred_dist_[fg_mask], target_ltrb[fg_mask], reduction="none").mean(-1, keepdim=True) * weight
             )
             loss_dfl = loss_dfl.sum() / target_scores_sum
 
@@ -497,50 +330,6 @@ class KeypointLoss(nn.Module):
         return (kpt_loss_factor.view(-1, 1) * ((1 - torch.exp(-e)) * kpt_mask)).mean()
 
 
-class WingLoss(nn.Module):
-    """Wing loss for face landmark regression.
-
-    Reference: https://arxiv.org/pdf/1711.06753v4.pdf
-    Provides logarithmic penalty for small errors and linear penalty for large errors,
-    making it more suitable for face landmark regression than L2 loss.
-    """
-
-    def __init__(self, w: float = 10.0, epsilon: float = 2.0) -> None:
-        """Initialize WingLoss with window width w and curvature epsilon."""
-        super().__init__()
-        self.w = w
-        self.epsilon = epsilon
-        self.C = w - w * math.log(1.0 + w / epsilon)
-
-    def forward(
-        self,
-        pred_kpts: torch.Tensor,
-        gt_kpts: torch.Tensor,
-        kpt_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Calculate Wing loss for visible keypoints only.
-
-        Args:
-            pred_kpts: Predicted keypoint coordinates (..., 2).
-            gt_kpts: Ground truth keypoint coordinates (..., 2).
-            kpt_mask: Boolean mask of valid (visible) keypoints (...).
-
-        Returns:
-            Scalar loss value (mean over visible keypoints).
-        """
-        if not kpt_mask.any():
-            return torch.zeros(1, device=pred_kpts.device, dtype=pred_kpts.dtype).squeeze()
-        pred = pred_kpts[kpt_mask]
-        gt = gt_kpts[kpt_mask]
-        diff = (pred - gt).abs()
-        loss = torch.where(
-            diff < self.w,
-            self.w * torch.log(1.0 + diff / self.epsilon),
-            diff - self.C,
-        )
-        return loss.mean()
-
-
 class v8DetectionLoss:
     """Criterion class for computing training losses for YOLOv8 object detection."""
 
@@ -559,6 +348,11 @@ class v8DetectionLoss:
         self.device = device
 
         self.use_dfl = m.reg_max > 1
+
+        # Class weights for handling imbalanced datasets
+        self.class_weights = getattr(model, "class_weights", None)
+        if self.class_weights is not None:
+            self.class_weights = self.class_weights.to(device).view(1, 1, -1)
 
         self.assigner = TaskAlignedAssigner(
             topk=tal_topk,
@@ -633,8 +427,11 @@ class v8DetectionLoss:
 
         target_scores_sum = max(target_scores.sum(), 1)
 
-        # Cls loss
-        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        # Cls loss with optional class weighting
+        bce_loss = self.bce(pred_scores, target_scores.to(dtype))  # (bs, num_anchors, nc)
+        if self.class_weights is not None:
+            bce_loss *= self.class_weights
+        loss[1] = bce_loss.sum() / target_scores_sum  # BCE
 
         # Bbox loss
         if fg_mask.sum():
@@ -1162,258 +959,6 @@ class PoseLoss26(v8PoseLoss):
                 kpts_obj_loss = self.bce_pose(pred_kpt[..., 2], kpt_mask.float())  # keypoint obj loss
 
         return kpts_loss, kpts_obj_loss, rle_loss
-
-
-class v8FaceLoss(v8PoseLoss):
-    """Loss function for face detection with 5-point landmark regression.
-
-    Extends v8PoseLoss by replacing the OKS-based KeypointLoss with WingLoss,
-    which provides better gradient behavior for face landmark regression.
-    No keypoint objectness (kobj) loss — visibility is a data property, not predicted.
-    """
-
-    def __init__(self, model, tal_topk: int = 10, tal_topk2: int = 10) -> None:
-        """Initialize v8FaceLoss with WingLoss for landmark regression."""
-        super().__init__(model, tal_topk, tal_topk2)
-        self.wing_loss = WingLoss(w=10.0, epsilon=2.0)
-
-    def calculate_keypoints_loss(
-        self,
-        masks: torch.Tensor,
-        target_gt_idx: torch.Tensor,
-        keypoints: torch.Tensor,
-        batch_idx: torch.Tensor,
-        stride_tensor: torch.Tensor,
-        target_bboxes: torch.Tensor,
-        pred_kpts: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Calculate landmark loss using WingLoss for visible landmarks only.
-
-        Args:
-            masks: Binary mask indicating foreground anchors, shape (BS, N_anchors).
-            target_gt_idx: Maps anchors to GT objects, shape (BS, N_anchors).
-            keypoints: GT keypoints in image coords, shape (N_kpts_in_batch, N_kpts, 3).
-            batch_idx: Batch index for keypoints, shape (N_kpts_in_batch, 1).
-            stride_tensor: Anchor strides, shape (N_anchors, 1).
-            target_bboxes: GT boxes in xyxy format, shape (BS, N_anchors, 4). Unused.
-            pred_kpts: Predicted keypoints (stride-normalized), shape (BS, N_anchors, N_kpts, 3).
-
-        Returns:
-            Tuple of (landmark_wing_loss, zero_kobj_loss).
-        """
-        selected_keypoints = self._select_target_keypoints(keypoints, batch_idx, target_gt_idx, masks)
-        selected_keypoints[..., :2] /= stride_tensor.view(1, -1, 1, 1)
-
-        lmk_loss = torch.tensor(0.0, device=self.device)
-
-        if masks.any():
-            gt_kpt = selected_keypoints[masks]   # (N_fg, N_kpts, 3)
-            pred_kpt = pred_kpts[masks]          # (N_fg, N_kpts, 3)
-            kpt_mask = gt_kpt[..., 2] != 0       # (N_fg, N_kpts) bool — visible landmarks
-            lmk_loss = self.wing_loss(pred_kpt[..., :2], gt_kpt[..., :2], kpt_mask)
-
-        return lmk_loss, torch.tensor(0.0, device=self.device)
-
-
-class FaceLoss26(PoseLoss26):
-    """Loss function for YOLO26 face detection with 5-point landmark regression.
-
-    Extends PoseLoss26 (which uses the correct kpts_decode for YOLO26's anchor-offset
-    scheme and supports RLE/sigma outputs) by replacing OKS KeypointLoss with WingLoss.
-    """
-
-    def __init__(self, model, tal_topk: int = 10, tal_topk2: int | None = None) -> None:
-        """Initialize FaceLoss26 with WingLoss for landmark regression."""
-        super().__init__(model, tal_topk, tal_topk2)
-        self.wing_loss = WingLoss(w=10.0, epsilon=2.0)
-        # Pose26 head always has flow_model=RealNVP, which causes PoseLoss26 to init rle_loss.
-        # Face task does not use RLE — disable it so loss tensor stays 5-element (not 6).
-        self.rle_loss = None
-        self.flow_model = None
-
-    def calculate_keypoints_loss(
-        self,
-        masks: torch.Tensor,
-        target_gt_idx: torch.Tensor,
-        keypoints: torch.Tensor,
-        batch_idx: torch.Tensor,
-        stride_tensor: torch.Tensor,
-        target_bboxes: torch.Tensor,
-        pred_kpts: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Calculate landmark loss using WingLoss for visible landmarks only.
-
-        Returns:
-            Tuple of (landmark_wing_loss, zero_kobj_loss, zero_rle_loss).
-        """
-        selected_keypoints = self._select_target_keypoints(keypoints, batch_idx, target_gt_idx, masks)
-        selected_keypoints[..., :2] /= stride_tensor.view(1, -1, 1, 1)
-
-        lmk_loss = torch.tensor(0.0, device=self.device)
-
-        if masks.any():
-            gt_kpt = selected_keypoints[masks]   # (N_fg, N_kpts, 3)
-            pred_kpt = pred_kpts[masks]          # (N_fg, N_kpts, 3+)
-            kpt_mask = gt_kpt[..., 2] != 0       # visible landmarks
-            lmk_loss = self.wing_loss(pred_kpt[..., :2], gt_kpt[..., :2], kpt_mask)
-
-        return lmk_loss, torch.tensor(0.0, device=self.device), torch.tensor(0.0, device=self.device)
-
-
-class v8YOLOv6FaceLoss(v8FaceLoss):
-    """Face detection loss matching YOLOv6-0.3.1 anchor-free branch (loss.py).
-
-    Replaces ultralytics defaults with:
-    - VarifocalLoss (alpha=0.75, gamma=2.0) instead of BCEWithLogitsLoss
-    - GIoU instead of CIoU (via FaceGIoUBboxLoss)
-    - CE-based DFL (active when reg_max=16 in yaml)
-    - RepulsionLoss (repGT + repBox, matching YOLOv6 params)
-    - TAL topk=13, alpha=1.0, beta=6.0
-    WingLoss for landmarks is unchanged (already identical to YOLOv6).
-    """
-
-    def __init__(self, model) -> None:
-        """Initialize with YOLOv6-style loss components."""
-        super().__init__(model)
-        m = model.model[-1]
-        # GIoU bbox loss (replaces CIoU)
-        self.bbox_loss = FaceGIoUBboxLoss(m.reg_max).to(self.device)
-        # VarifocalLoss (replaces BCEWithLogitsLoss)
-        self.varifocal_loss = VarifocalLoss(gamma=2.0, alpha=0.75)
-        # TAL: topk=13, alpha=1.0, beta=6.0 (YOLOv6 defaults)
-        self.assigner = TaskAlignedAssigner(
-            topk=13,
-            num_classes=self.nc,
-            alpha=1.0,
-            beta=6.0,
-            stride=self.stride.tolist(),
-        )
-
-    @staticmethod
-    def kpts_decode(anchor_points: torch.Tensor, pred_kpts: torch.Tensor) -> torch.Tensor:
-        """Decode keypoints using Pose26-style anchor offset (raw pred + anchor, no ×2 scaling)."""
-        y = pred_kpts.clone()
-        y[..., 0] += anchor_points[:, [0]]
-        y[..., 1] += anchor_points[:, [1]]
-        return y
-
-    def get_assigned_targets_and_loss(self, preds: dict, batch: dict) -> tuple:
-        """Compute box + cls (VFL) + dfl losses with YOLOv6-style assignment."""
-        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
-        pred_distri, pred_scores = (
-            preds["boxes"].permute(0, 2, 1).contiguous(),
-            preds["scores"].permute(0, 2, 1).contiguous(),
-        )
-        anchor_points, stride_tensor = make_anchors(preds["feats"], self.stride, 0.5)
-
-        dtype = pred_scores.dtype
-        batch_size = pred_scores.shape[0]
-        imgsz = torch.tensor(preds["feats"][0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]
-
-        # Targets
-        targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
-        targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # (bs, max_gt, 1), (bs, max_gt, 4)
-        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
-
-        # Decode predicted boxes
-        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (bs, h*w, 4)
-
-        _, target_bboxes, target_scores, fg_mask, target_gt_idx = self.assigner(
-            pred_scores.detach().sigmoid(),
-            (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            anchor_points * stride_tensor,
-            gt_labels,
-            gt_bboxes,
-            mask_gt,
-        )
-
-        target_scores_sum = max(target_scores.sum(), 1)
-
-        # VarifocalLoss for classification (replaces BCE)
-        # Build one_hot_label: (bs, n_anchors, nc) — 1 at matched class, 0 elsewhere
-        n_anchors = pred_scores.shape[1]
-        batch_ind = torch.arange(batch_size, device=self.device).unsqueeze(-1).expand(-1, n_anchors)
-        gt_labels_sq = gt_labels.squeeze(-1).long()  # (bs, max_gt)
-        target_labels = gt_labels_sq[batch_ind, target_gt_idx.clamp(0, gt_labels_sq.shape[1] - 1)]
-        target_labels = torch.where(fg_mask, target_labels, torch.full_like(target_labels, self.nc))
-        one_hot_label = F.one_hot(target_labels, self.nc + 1)[..., :-1].to(dtype)  # (bs, n_anchors, nc)
-
-        loss[1] = self.varifocal_loss(pred_scores, target_scores, one_hot_label) / target_scores_sum
-
-        # BBox loss: GIoU + DFL
-        if fg_mask.sum():
-            loss[0], loss[2] = self.bbox_loss(
-                pred_distri,
-                pred_bboxes,
-                anchor_points,
-                target_bboxes / stride_tensor,
-                target_scores,
-                target_scores_sum,
-                fg_mask,
-                imgsz,
-                stride_tensor,
-            )
-
-        loss[0] *= self.hyp.box
-        loss[1] *= self.hyp.cls
-        loss[2] *= self.hyp.dfl
-
-        return (fg_mask, target_gt_idx, target_bboxes, anchor_points, stride_tensor), loss, loss.detach()
-
-    def loss(self, preds: dict, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Full YOLOv6-style loss: detection + WingLoss (landmarks) + RepulsionLoss."""
-        pred_kpts = preds["kpts"].permute(0, 2, 1).contiguous()
-        # loss indices: 0=box, 1=kpt(wing), 2=kobj(zero), 3=cls(vfl), 4=dfl, 5=repgt, 6=repbox
-        loss = torch.zeros(7, device=self.device)
-
-        (fg_mask, target_gt_idx, target_bboxes, anchor_points, stride_tensor), det_loss, _ = (
-            self.get_assigned_targets_and_loss(preds, batch)
-        )
-        loss[0], loss[3], loss[4] = det_loss[0], det_loss[1], det_loss[2]
-
-        batch_size = pred_kpts.shape[0]
-        imgsz = torch.tensor(preds["feats"][0].shape[2:], device=self.device, dtype=pred_kpts.dtype) * self.stride[0]
-
-        # Decode keypoints
-        pred_kpts = self.kpts_decode(anchor_points, pred_kpts.view(batch_size, -1, *self.kpt_shape))
-
-        # WingLoss for landmarks (inherited from v8FaceLoss.calculate_keypoints_loss)
-        if fg_mask.sum():
-            keypoints = batch["keypoints"].to(self.device).float().clone()
-            keypoints[..., 0] *= imgsz[1]
-            keypoints[..., 1] *= imgsz[0]
-            loss[1], loss[2] = self.calculate_keypoints_loss(
-                fg_mask,
-                target_gt_idx,
-                keypoints,
-                batch["batch_idx"].view(-1, 1),
-                stride_tensor,
-                target_bboxes,
-                pred_kpts,
-            )
-
-        loss[1] *= self.hyp.pose  # WingLoss gain
-        loss[2] *= self.hyp.kobj  # kobj = 0 for face (no visibility prediction)
-
-        # RepulsionLoss (port from YOLOv6)
-        pred_distri = preds["boxes"].permute(0, 2, 1).contiguous()
-        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)      # stride-normalized xyxy
-        target_bboxes_norm = target_bboxes / stride_tensor               # normalize to stride space
-
-        loss_repgt, loss_repbox = repulsion_loss(
-            pred_bboxes,
-            target_bboxes_norm,
-            fg_mask,
-            sigma_repgt=0.9,
-            sigma_repbox=0.0,
-            pnms=0.0,
-            gtnms=0.0,
-        )
-        loss[5] = loss_repgt * self.hyp.repgt
-        loss[6] = loss_repbox * self.hyp.repbox
-
-        return loss.sum() * batch_size, loss.detach()
 
 
 class v8ClassificationLoss:
