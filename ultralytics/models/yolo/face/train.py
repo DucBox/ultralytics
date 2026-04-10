@@ -77,7 +77,14 @@ class FaceTrainer(yolo.pose.PoseTrainer):
 
     def get_validator(self):
         """Return a FaceValidator instance for model evaluation."""
-        self.loss_names = "box_loss", "lmk_loss", "kobj_loss", "cls_loss", "dfl_loss"
+        from ultralytics.utils.torch_utils import unwrap_model
+        
+        criterion = unwrap_model(self.model).criterion
+        if type(criterion).__name__ == "v8YOLOv6FaceLoss":
+            self.loss_names = "box_loss", "lmk_loss", "kobj_loss", "cls_loss", "dfl_loss", "repgt_loss", "repbox_loss"
+        else:
+            self.loss_names = "box_loss", "lmk_loss", "kobj_loss", "cls_loss", "dfl_loss"
+            
         return yolo.face.FaceValidator(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
         )
