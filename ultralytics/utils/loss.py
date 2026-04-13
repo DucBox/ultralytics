@@ -192,8 +192,11 @@ def repulsion_loss(
     pbox = pbox.detach()
     gtbox = gtbox.detach()
 
+    # Single GPU-CPU sync for entire batch (avoids per-item sync inside loop)
+    fg_counts = fg_mask.sum(dim=1).tolist()
+
     for idx in range(pbox.shape[0]):
-        if fg_mask[idx].sum() <= 0:
+        if fg_counts[idx] <= 0:
             continue
         _pbox_pos = pbox[idx][fg_mask[idx]]   # (num_pos, 4)
         _gtbox_pos = gtbox[idx][fg_mask[idx]]  # (num_pos, 4)
@@ -202,15 +205,13 @@ def repulsion_loss(
         pgiou = pairwise_bbox_iou(_pbox_pos, _gtbox_pos)  # (num_pos, num_pos)
         ppiou = pairwise_bbox_iou(_pbox_pos, _pbox_pos)   # (num_pos, num_pos)
 
-        # Mask same-GT pairs and upper triangle (matching YOLOv6 loop logic)
-        _gt_np = _gtbox_pos.cpu().numpy()
-        for j in range(len(_gt_np)):
-            for z in range(j, len(_gt_np)):
-                ppiou[j, z] = 0
-                if (_gt_np[j] == _gt_np[z]).all():
-                    pgiou[j, z] = 0
-                    pgiou[z, j] = 0
-                    ppiou[z, j] = 0
+        # Mask same-GT pairs and upper triangle — fully vectorized, no CPU transfer
+        # Zero upper triangle including diagonal (original: ppiou[j,z]=0 for z>=j)
+        ppiou = torch.tril(ppiou, diagonal=-1)
+        # Find pairs sharing the same GT box (all 4 coords match)
+        same_gt = (_gtbox_pos.unsqueeze(0) == _gtbox_pos.unsqueeze(1)).all(dim=-1)  # (N, N)
+        pgiou = pgiou.masked_fill(same_gt, 0.0)
+        ppiou = ppiou.masked_fill(same_gt, 0.0)
 
         # repGT: penalize proximity to non-matched GT
         max_iou, _ = pgiou.max(dim=1)
@@ -578,9 +579,10 @@ class v8DetectionLoss:
             out = torch.zeros(batch_size, 0, ne - 1, device=self.device)
         else:
             batch_idx = targets[:, 0].long()  # image index
-            _, counts = batch_idx.unique(return_counts=True)
-            counts = counts.to(dtype=torch.int32)
-            out = torch.zeros(batch_size, counts.max(), ne - 1, device=self.device)
+            # Compute counts on CPU to avoid GPU-CPU sync stall (counts.max() as tensor dim requires .item()).
+            counts_cpu = torch.bincount(batch_idx.cpu(), minlength=batch_size)
+            max_gt = int(counts_cpu.max())
+            out = torch.zeros(batch_size, max_gt, ne - 1, device=self.device)
             offsets = torch.zeros(batch_size + 1, dtype=torch.long, device=self.device)
             offsets.scatter_add_(0, batch_idx + 1, torch.ones_like(batch_idx))
             offsets = offsets.cumsum(0)
