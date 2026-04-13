@@ -1,0 +1,12 @@
+# WIDER FACE dataset for standard bounding-box detection (no landmarks)
+# Label format (5 values per line): class cx cy w h  (normalized 0-1)
+# Example usage: yolo train task=detect data=widerface_bbox_only.yaml model=yolo26n.yaml
+
+path: /Users/ngoquangduc/Desktop/workspace/face_detection  # dataset root dir
+train: widerface_bbox/images/train  # train images (nested by event category)
+val: widerface_bbox/images/val      # val images (nested by event category)
+
+# Classes
+nc: 1
+names:
+  0: face

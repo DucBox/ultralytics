@@ -735,7 +735,7 @@ class Pose26(Pose):
             bs = x[0].shape[0]  # batch size
             features = [pose_head[i](x[i]) for i in range(self.nl)]
             preds["kpts"] = torch.cat([kpts_head[i](features[i]).view(bs, self.nk, -1) for i in range(self.nl)], 2)
-            if self.training:
+            if self.training and kpts_sigma_head is not None:
                 preds["kpts_sigma"] = torch.cat(
                     [kpts_sigma_head[i](features[i]).view(bs, self.nk_sigma, -1) for i in range(self.nl)], 2
                 )

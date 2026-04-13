@@ -917,8 +917,11 @@ class v8PoseLoss(v8DetectionLoss):
         batch_idx = batch_idx.flatten()
         batch_size = len(masks)
 
-        # Find the maximum number of keypoints in a single image
-        max_kpts = torch.unique(batch_idx, return_counts=True)[1].max()
+        # Compute max keypoints per image on CPU to avoid GPU-CPU sync stall.
+        # torch.unique on a GPU tensor forces .item() (sync) when used as a tensor dim,
+        # which stalls the GPU pipeline every batch. bincount on the CPU copy is fast
+        # because batch_idx is small and not the result of any pending GPU computation.
+        max_kpts = int(torch.bincount(batch_idx.cpu().long(), minlength=batch_size).max())
 
         # Create a tensor to hold batched keypoints
         batched_keypoints = torch.zeros(
