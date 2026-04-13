@@ -281,6 +281,12 @@ class TQDM:
                 # In non-interactive environments, avoid carriage return which creates empty lines
                 self.file.write(progress_str)
             else:
+                # Truncate to terminal width to prevent line wrapping
+                import shutil
+
+                cols = shutil.get_terminal_size(fallback=(256, 24)).columns
+                if len(progress_str) > cols:
+                    progress_str = progress_str[:cols]
                 # In interactive terminals, use carriage return and clear line for updating display
                 self.file.write(f"\r\033[K{progress_str}")
             self.file.flush()
