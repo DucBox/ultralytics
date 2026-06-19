@@ -9,9 +9,8 @@ from ultralytics.utils import DEFAULT_CFG
 class FacePredictor(PosePredictor):
     """Predictor for YOLO face detection models with 5-point landmark output.
 
-    Extends PosePredictor with face task configuration. Inherits all keypoint
-    coordinate decoding and scaling from PosePredictor, which already handles
-    arbitrary kpt_shape values.
+    Extends PosePredictor with face task configuration. Inherits all keypoint coordinate decoding and scaling from
+    PosePredictor, which already handles arbitrary kpt_shape values.
 
     Attributes:
         args (namespace): Configuration arguments with task='face'.
