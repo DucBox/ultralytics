@@ -14,9 +14,8 @@ from ultralytics.utils import DEFAULT_CFG
 class FaceTrainer(yolo.pose.PoseTrainer):
     """Trainer for YOLO face detection models with 5-point landmark support.
 
-    Extends PoseTrainer with face-specific configuration: WingLoss criterion,
-    face task registration, and appropriate loss naming. Uses the existing pose
-    infrastructure (Pose head, keypoint-aware augmentations, dataset loading).
+    Extends PoseTrainer with face-specific configuration: WingLoss criterion, face task registration, and appropriate
+    loss naming. Uses the existing pose infrastructure (Pose head, keypoint-aware augmentations, dataset loading).
 
     Attributes:
         args (dict): Configuration arguments for training.
@@ -85,7 +84,7 @@ class FaceTrainer(yolo.pose.PoseTrainer):
             self.loss_names = "box_loss", "lmk_loss", "kobj_loss", "cls_loss", "dfl_loss", "repgt_loss", "repbox_loss"
         else:
             self.loss_names = "box_loss", "lmk_loss", "kobj_loss", "cls_loss", "dfl_loss"
-            
+
         return yolo.face.FaceValidator(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
         )
